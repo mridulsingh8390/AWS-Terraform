@@ -1,0 +1,50 @@
+#!/bin/bash
+# Bastion bootstrap. Runs once at first boot (cloud-init). Log: /var/log/bastion-init.log
+exec > /var/log/bastion-init.log 2>&1
+set -x
+
+# SSM agent: preinstalled on Amazon Linux 2023, but make sure it is installed, enabled
+# (starts on every boot) and running before anything else needs it.
+dnf install -y amazon-ssm-agent || true
+systemctl enable amazon-ssm-agent
+systemctl start amazon-ssm-agent
+
+dnf install -y git jq unzip tar
+
+# kubectl (pinned; keep within one minor version of the cluster)
+curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${kubectl_version}/bin/linux/amd64/kubectl" \
+  && chmod +x /usr/local/bin/kubectl
+
+# helm
+curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+# Every login (Session Manager creates the ssm-user): set the region and create the
+# kubeconfig for this cluster if the user does not have one yet.
+cat > /etc/profile.d/eks-kubeconfig.sh <<'PROFILE'
+export AWS_REGION=${region}
+export AWS_DEFAULT_REGION=${region}
+if [ ! -f "$HOME/.kube/config" ] && command -v aws >/dev/null 2>&1; then
+  aws eks update-kubeconfig --name ${cluster_name} --region ${region} >/dev/null 2>&1 || true
+fi
+PROFILE
+chmod 644 /etc/profile.d/eks-kubeconfig.sh
+
+# VM is ready: wait until the instance role's credentials are served by the metadata
+# service (IMDSv2), then restart the SSM agent so it registers with Systems Manager using
+# the attached role. An agent that started before the role was usable can sit unregistered.
+for i in $(seq 1 30); do
+  TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+  ROLE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" "http://169.254.169.254/latest/meta-data/iam/security-credentials/")
+  if [ -n "$ROLE" ] && ! echo "$ROLE" | grep -qi "not found"; then
+    echo "instance role available: $ROLE"
+    break
+  fi
+  echo "waiting for instance role credentials ($i/30)"
+  sleep 5
+done
+
+systemctl restart amazon-ssm-agent
+sleep 5
+echo "amazon-ssm-agent: $(systemctl is-active amazon-ssm-agent) / enabled: $(systemctl is-enabled amazon-ssm-agent)"
+
+echo "bastion bootstrap finished"

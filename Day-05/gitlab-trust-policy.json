@@ -1,0 +1,12 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Federated": "arn:aws:iam::730335612245:oidc-provider/gitlab.com" },
+    "Action": "sts:AssumeRoleWithWebIdentity",
+    "Condition": {
+      "StringEquals": { "gitlab.com:aud": "https://gitlab.com" },
+      "StringLike":   { "gitlab.com:sub": "project_path:automation-group5781029/aws-terraform-lab:ref_type:branch:ref:main" }
+    }
+  }]
+}
